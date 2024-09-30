@@ -1074,7 +1074,7 @@ class AdaptVQE(metaclass=abc.ABCMeta):
                 f"Final Energy: {self.energy}\nError: {error}\n"
                 f"(in % of chemical accuracy: {(error / chemical_accuracy * 100):.3f}%)\n"
                 f"Iterations completed: {self.data.iteration_counter}\n"
-                f"Ansatz indices: {self.indices}\nCoefficiens: {self.coefficients}"
+                f"Ansatz indices: {self.indices}\nCoefficients: {self.coefficients}"
             )
         else:
             print(
