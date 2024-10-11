@@ -16,7 +16,6 @@
 
 
 module load site/tinkercliffs/easybuild/setup
-module load site/tinkercliffs-rome_a100/easybuild/setup
 module load Anaconda3/2020.11
 
 REPO_DIR=$(git rev-parse --show-toplevel)
@@ -31,7 +30,7 @@ if [ $? -eq 0 ]; then
     echo "Using existing conda environment $ENV"
     # conda env update -f $ENV_YML --prune
 else
-    conda env create -y -p $ENV python=3.12
+    conda create -y -p $ENV python=3.12
     source activate $ENV
 fi
 
