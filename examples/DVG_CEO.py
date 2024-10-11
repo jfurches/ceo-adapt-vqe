@@ -5,44 +5,49 @@ Created on Wed Jul  6 09:47:40 2022
 @author: mafal
 """
 
-from adaptvqe.molecules import create_h2
-from adaptvqe.pools import DVG_CEO
+import contextlib
+from pathlib import Path
+
+from adaptvqe import molecules
 from adaptvqe.algorithms.adapt_vqe import LinAlgAdapt
+from adaptvqe.pools import DVG_CEO
 
-r = 1.5
-molecule = create_h2(r)
-pool = DVG_CEO(molecule)
 
-my_adapt = LinAlgAdapt(
-    pool=pool,
-    molecule=molecule,
-    max_adapt_iter=1,
-    recycle_hessian=True,
-    tetris=True,
-    verbose=True,
-    threshold=0.1,
-)
+def main(mol_name: str, r: float):
+    mol_factory = getattr(molecules, "create_" + mol_name)
+    assert mol_factory is not None, f"No method found to make molecule {mol_name}"
+    assert callable(mol_factory)
 
-my_adapt.run()
-data = my_adapt.data
+    logfile = Path("logs") / f"{mol_name}-{r:.3f}.txt"
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    # Redirect all the print statements to our log file
+    with open(logfile, "w") as f:
+        with contextlib.redirect_stdout(f):
+            molecule = mol_factory(r)
+            pool = DVG_CEO(molecule)
 
-# Access the final ansatz indices and coefficients
-print("Evolution of ansatz indices: ", data.evolution.indices)
-print(
-    "Final operators in the ansatz: ",
-    [pool.get_op(index) for index in data.result.ansatz.indices],
-)
-print("Evolution of ansatz coefficients: ", data.evolution.coefficients)
+            my_adapt = LinAlgAdapt(
+                pool=pool,
+                molecule=molecule,
+                max_adapt_iter=1000,
+                recycle_hessian=True,
+                tetris=True,
+                verbose=True,
+                threshold=1e-3,
+                convergence_criterion="max_g",
+            )
+            my_adapt.run()
+            data = my_adapt.data
 
-# Access the number of function evaluations, gradient evaluations, optimizer iterations for each ADAPT-VQE iteration
-print("Function evaluations throughout the iterations:", data.evolution.nfevs)
-print("Gradient evaluations throughout the iterations:", data.evolution.ngevs)
-print("Optimizer iterations throughout the iterations:", data.evolution.nits)
+            # Access the final ansatz indices and coefficients
+            print("Evolution of ansatz indices: ", data.evolution.indices)
 
-# Create the circuit implementing the final ansatz
-qc = pool.get_circuit(data.result.ansatz.indices, data.result.ansatz.coefficients)
-print("Final ansatz circuit:\n", qc)
 
-# Access the number of CNOTs and CNOT depth at each iteration
-print("Evolution of ansatz CNOT counts: ", data.acc_cnot_counts(pool))
-print("Evolution of ansatz CNOT depths: ", data.acc_cnot_depths(pool))
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mol", choices=["h4", "h6", "lih", "beh2"], required=True)
+    parser.add_argument("--r", type=float, required=True)
+    args = parser.parse_args()
+    main(args.mol, args.r)

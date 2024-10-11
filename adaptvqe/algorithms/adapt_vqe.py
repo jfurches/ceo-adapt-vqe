@@ -5,23 +5,23 @@ Created on Wed Jun 29 10:00:03 2022
 @author: mafal
 """
 
-from copy import copy, deepcopy
 import abc
+from copy import copy, deepcopy
+from typing import Iterable, List, Literal, Optional, Tuple
+
 import numpy as np
 import scipy
-
+from openfermion import count_qubits, get_sparse_operator
+from openfermion.transforms import freeze_orbitals, get_fermion_operator
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import expm, expm_multiply
 
-from openfermion import get_sparse_operator, count_qubits
-from openfermion.transforms import get_fermion_operator, freeze_orbitals
-
-from .adapt_data import AdaptData
-from ..chemistry import chemical_accuracy, get_hf_det, create_spin_adapted_one_body_op
+from ..chemistry import chemical_accuracy, create_spin_adapted_one_body_op, get_hf_det
 from ..matrix_tools import ket_to_vector
 from ..minimize import minimize_bfgs
-from ..pools import ImplementationType
+from ..pools import ImplementationType, OperatorPool, PoolOperator
 from ..utils import bfgs_update
+from .adapt_data import AdaptData
 
 
 class AdaptVQE(metaclass=abc.ABCMeta):
@@ -29,27 +29,38 @@ class AdaptVQE(metaclass=abc.ABCMeta):
     Class for running the ADAPT-VQE algorithm.
     """
 
+    GradChoices = Literal[
+        "gradient",
+        "summed_gradient",
+        "1d_energy",
+        "energy",
+        "1d_quad_fit",
+        "line_search",
+        "sample",
+        "random",
+    ]
+
     def __init__(
         self,
-        pool,
+        pool: OperatorPool,
         molecule=None,
         custom_hamiltonian=None,
-        verbose=False,
-        max_adapt_iter=50,
-        max_opt_iter=10000,
-        full_opt=True,
-        threshold=0.1,
-        convergence_criterion="total_g_norm",
-        tetris=False,
-        progressive_opt=False,
-        candidates=1,
-        orb_opt=False,
-        sel_criterion="gradient",
-        recycle_hessian=False,
-        penalize_cnots=False,
-        rand_degenerate=False,
-        frozen_orbitals=[],
-        shots=None,
+        verbose: bool = False,
+        max_adapt_iter: int = 50,
+        max_opt_iter: int = 10000,
+        full_opt: bool = True,
+        threshold: float = 0.1,
+        convergence_criterion: Literal["total_g_norm", "max_g"] = "total_g_norm",
+        tetris: bool = False,
+        progressive_opt: bool = False,
+        candidates: int = 1,
+        orb_opt: bool = False,
+        sel_criterion: GradChoices = "gradient",
+        recycle_hessian: bool = False,
+        penalize_cnots: bool = False,
+        rand_degenerate: bool = False,
+        frozen_orbitals: List = [],
+        shots: Optional[int] = None,
     ):
         """
         Arguments:
@@ -182,7 +193,7 @@ class AdaptVQE(metaclass=abc.ABCMeta):
             raise ValueError("Progressive optimization is only defined by TETRIS mode.")
 
         if not self.sel_criterion in (
-            [
+            {
                 "gradient",
                 "summed_gradient",
                 "1d_energy",
@@ -191,7 +202,7 @@ class AdaptVQE(metaclass=abc.ABCMeta):
                 "line_search",
                 "sample",
                 "random",
-            ]
+            }
         ):
             raise ValueError(
                 f"Selection criterion {self.sel_criterion} not supported.\nSupported criteria: "
@@ -1267,7 +1278,7 @@ class AdaptVQE(metaclass=abc.ABCMeta):
 
         return energy, gradient, viable_candidates, viable_gradients
 
-    def complete_iteration(self, energy, total_norm, sel_gradients):
+    def complete_iteration(self, energy: float, total_norm: float, sel_gradients: list):
         """
         Complete iteration by storing the relevant data and updating the state.
 
@@ -1718,10 +1729,10 @@ class AdaptVQE(metaclass=abc.ABCMeta):
         minimizers_1d, e_changes_1d = self.get_quad_fit_minimizers(indices, gradients)
 
         # Find the best energy change
-        e_change_1d = min(e_changes_1d)
+        grad_rank = np.argmin(e_change_1d)
+        e_change_1d = e_changes_1d[grad_rank]
 
         # Find the corresponding minimizer, operator index and gradient
-        grad_rank = e_changes_1d.index(e_change_1d)
         coefficient = minimizers_1d[grad_rank]
         index = indices[grad_rank]
         gradient = gradients[grad_rank]
@@ -1747,9 +1758,8 @@ class AdaptVQE(metaclass=abc.ABCMeta):
         """
 
         # Choose one of the operators by sampling according to the provided probability distribution
-        gradient = np.random.choice(gradients, p=probabilities)
-        grad_rank = gradients.index(gradient)
-        index = indices[grad_rank]
+        idx = np.random.choice(len(gradients), p=probabilities)
+        index, gradient = indices[idx], gradients[idx]
 
         # Grow the ansatz and the parameter and gradient vectors
         self.indices.append(index)
@@ -1799,36 +1809,37 @@ class AdaptVQE(metaclass=abc.ABCMeta):
 
         return gradient
 
-    def find_highest_gradient(self, indices, gradients, excluded_range=[]):
+    def find_highest_gradient(
+        self,
+        indices: List[int],
+        gradients: List[float],
+        excluded_range: Iterable[int] = None,
+    ) -> Tuple[int, float]:
         """
         Find the operator with the highest gradient magnitude.
 
         Arguments:
-            indices (list): the indices  of pool operators to select from
-            gradients (list): the corresponding gradients
-            excluded_range (range): range of pool indices to be ignored
+            indices: the indices of pool operators to select from
+            gradients: the corresponding gradients
+            excluded_range: range of pool indices to be ignored
 
         Returns:
-            index (float): the index of the operator with the highest gradient magnitude
-            gradient (float): the corresponding gradient
+            index: the index of the operator with the highest gradient magnitude
+            gradient: the corresponding gradient
         """
+        # Take the absolute value of the gradients.
+        abs_gradients = np.abs(gradients)
 
-        # Filter out operators in the excluded range
-        viable_indices = []
-        viable_gradients = []
-        for index, gradient in zip(indices, gradients):
-            if index not in excluded_range:
-                viable_indices.append(index)
-                viable_gradients.append(gradient)
+        # Invalidate the range we wish to exclude by setting it to
+        # -inf (everything else will be higher).
+        if excluded_range:
+            mask = np.isin(indices, excluded_range)
+            abs_gradients[mask] = -np.inf
 
-        # Find maximum absolute gradient
-        abs_gradients = [np.abs(gradient) for gradient in viable_gradients]
-        max_abs_gradient = max(abs_gradients)
-
-        # Find corresponding gradient and index
-        grad_rank = abs_gradients.index(max_abs_gradient)
-        index = viable_indices[grad_rank]
-        gradient = viable_gradients[grad_rank]
+        # Retrieve the largest element
+        grad_rank = np.argmax(abs_gradients)
+        gradient = gradients[grad_rank]
+        index = indices[grad_rank]
 
         return index, gradient
 
@@ -1950,11 +1961,19 @@ class AdaptVQE(metaclass=abc.ABCMeta):
                 candidates = [index]
                 candidate_gradients = [gradient]
 
+                # Print friendly representation for parsing
+                print(self.pool.operators[index].friendly_str())
+
             elif len(viable_parents) > 1:
                 if self.dvg or self.mvp or len(viable_parents) == 3:
                     print(f"\nAdding MVP-CEO.")
                     candidates = [viable_parents]
                     candidate_gradients = [parent_gradients]
+
+                    candidate_repr = ", ".join(
+                            (self.pool.operators[i].friendly_str() for i in viable_parents)
+                    )
+                    print(f"MVP({candidate_repr})")
 
             # no else - at least one parent has non zero gradient
 
@@ -3413,6 +3432,7 @@ class LinAlgAdapt(AdaptVQE):
 
 
 from qiskit import QuantumCircuit
+
 from adaptvqe.op_conv import to_qiskit_operator
 
 
@@ -3440,8 +3460,8 @@ class SampledLinAlgAdapt(LinAlgAdapt):
         ref_state=None,
         orb_params=None,
     ):
-        from scipy.sparse import issparse
         from qiskit.primitives import Estimator
+        from scipy.sparse import issparse
 
         ket = self.get_state(coefficients, indices, ref_state)
 

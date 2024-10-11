@@ -7,6 +7,7 @@ Created on Wed Jun 29 11:47:52 2022
 
 import abc
 import itertools
+from typing import List
 import numpy as np
 from copy import copy
 from warnings import warn
@@ -113,7 +114,7 @@ class PoolOperator(metaclass=abc.ABCMeta):
         return False
 
     def arrange(self):
-        """
+        r"""
         Arrange self.
         If self is a fermionic operator $\tau$, it will be made into a proper
         anti-hermitian pool operator $\tau$ - hc($\tau$) and normal-ordered.
@@ -179,6 +180,36 @@ class PoolOperator(metaclass=abc.ABCMeta):
         if self.op_type == OpType.FERMIONIC:
             return self._f_operator
 
+    def friendly_str(self):
+        """Returns a friendly, parsable representation of the operator"""
+        # Only CEOs have parents, otherwise let's assume for now
+        # that root nodes are QEs
+        if self.parents:
+            # OVPs have types, MVPs do not
+            if self.ceo_type is not None:
+                sign = '+1' if self.ceo_type == 'sum' else '-1'
+                # The src/target orbs can either be a list with single entry,
+                # or a list of lists.
+                if isinstance(self.target_orbs[0], list):
+                    strs = []
+                    for srcs, targets in zip(self.source_orbs, self.target_orbs):
+                        target_orbs = ", ".join(map(str, targets))
+                        src_orbs = ", ".join(map(str, srcs))
+                        strs.append(f"QE({src_orbs}, {target_orbs})")
+                    
+                    middle = ", ".join(strs)
+                    return f'OVP({middle}, {sign})'
+
+                return f'OVP({self.source_orbs[0]}, {self.target_orbs[0]}, {sign})'
+            else:
+                # We shouldn't reach this point bc MVP operators aren't constructed up front,
+                # they are dynamically constructed from QEs
+                raise Exception("MVP")
+
+        else:
+            target_orbs = ", ".join(map(str, self.target_orbs))
+            src_orbs = ", ".join(map(str, self.source_orbs))
+            return f"QE({src_orbs}, {target_orbs})"
 
 class OperatorPool(metaclass=abc.ABCMeta):
     name = None
@@ -213,7 +244,7 @@ class OperatorPool(metaclass=abc.ABCMeta):
             self.n_so = molecule.n_orbitals  # Number of spatial orbitals
             self.n = molecule.n_qubits - len(frozen_orbitals)  # Number of qubits = 2*n_so
 
-        self.operators = []
+        self.operators: List[PoolOperator] = []
         self._ops_on_qubits = {}
 
         self.create_operators()
@@ -1671,7 +1702,7 @@ class QE1(GSD):
 
                 new_operator += new_pauli
 
-            new_operator = PoolOperator(new_operator, self.n, self.size)
+            new_operator = PoolOperator(new_operator, self.n, self.size, source_orbs=pool_operator.source_orbs, target_orbs=pool_operator.target_orbs,)
 
             self.add_operator(new_operator)
 
@@ -2078,7 +2109,7 @@ class CEO(OperatorPool):
 
     def create_doubles(self):
         """
-        Create one-body CEOs.
+        Create two-body CEOs.
         """
 
         for p in range(0, self.n):
