@@ -37,5 +37,5 @@ fi
 # Install ceo-adapt-vqe
 pip install $REPO_DIR
 
-# Run across all cores
-python generate_data.py -p $SLURM_CPUS_PER_TASK
+# Run across 4 cores, leaving 4 threads per core to numpy/openmp
+python generate_data.py -p 4
